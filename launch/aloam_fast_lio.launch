@@ -24,6 +24,7 @@
     <param name="save_directory" type="string" value="$(env HOME)/SLAM_MAP/"/>  <!-- CHANGE THIS and end with / -->
 
     <!-- nodes -->
+    <remap from="/gps/fix" to="/zed_f9p/fix" />
     <remap from="/aft_mapped_to_init" to="/Odometry"/>
     <remap from="/velodyne_cloud_registered_local" to="/cloud_registered_body"/>
     <remap from="/cloud_for_scancontext" to="/cloud_registered_lidar"/> <!-- lidar-ego-centric coordinate for better performance -->
