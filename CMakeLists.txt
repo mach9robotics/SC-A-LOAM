@@ -19,10 +19,13 @@ find_package(catkin REQUIRED COMPONENTS
   tf
 )
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindGeographicLib.cmake)
+
 #find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Ceres REQUIRED)
+# find_package(GeographicLib REQUIRED)
 
 find_package(OpenMP REQUIRED)
 find_package(GTSAM REQUIRED QUIET)
@@ -62,6 +65,7 @@ target_compile_options(alaserPGO
 target_link_libraries(alaserPGO
   ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES}
   ${OpenMP_CXX_FLAGS}
+  ${GeographicLib_LIBRARIES}
   gtsam
 )
 

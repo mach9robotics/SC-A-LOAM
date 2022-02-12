@@ -51,6 +51,8 @@
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/ISAM2.h>
+#include <GeographicLib/Geocentric.hpp>
+#include <GeographicLib/LocalCartesian.hpp>
 
 #include "aloam_velodyne/common.h"
 #include "aloam_velodyne/tic_toc.h"
@@ -117,13 +119,15 @@ pcl::VoxelGrid<PointType> downSizeFilterMapPGO;
 bool laserCloudMapPGORedraw = true;
 
 bool useGPS = true;
-// bool useGPS = false;
+bool useGPSXY = true; // use lat and lon in addition to alt
 sensor_msgs::NavSatFix::ConstPtr currGPS;
 bool hasGPSforThisKF = false;
 bool gpsOffsetInitialized = false;
 double gpsAltitudeInitOffset = 0.0;
 double recentOptimizedX = 0.0;
 double recentOptimizedY = 0.0;
+// GeographicLib::Geocentric earth(GeographicLib::Constants::WGS84_a(), GeographicLib::Constants::WGS84_f());
+GeographicLib::LocalCartesian gpsConverter;
 
 ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO;
 ros::Publisher pubLoopScanLocal, pubLoopSubmapLocal;
@@ -617,6 +621,8 @@ void process_pg()
 
             if( !gpsOffsetInitialized ) {
                 if(hasGPSforThisKF) { // if the very first frame
+                    // reset ENU cartesian
+                    gpsConverter.Reset(currGPS->latitude, currGPS->longitude, currGPS->altitude);
                     gpsAltitudeInitOffset = currGPS->altitude;
                     gpsOffsetInitialized = true;
                 }
@@ -649,10 +655,22 @@ void process_pg()
 
                 mtxPosegraph.lock();
                 {
-                    // prior factor
-                    gtSAMgraph.add(gtsam::PriorFactor<gtsam::Pose3>(init_node_idx, poseOrigin, priorNoise));
-                    initialEstimate.insert(init_node_idx, poseOrigin);
-                    // runISAM2opt();
+                    if (useGPSXY)
+                    {
+                        // prior factor: enu coordinate 000, high uncertainty non-anchor point
+                        gtsam::Vector priorNoiseVector6(6);
+                        priorNoiseVector6 << 1e6, 1e6, 1e6, 1e6, 1e6, 1e6;
+                        priorNoise = noiseModel::Diagonal::Variances(priorNoiseVector6);
+                        gtSAMgraph.add(gtsam::PriorFactor<gtsam::Pose3>(init_node_idx, poseOrigin, priorNoise));
+                        initialEstimate.insert(init_node_idx, poseOrigin);
+                    }
+                    else
+                    {
+                        // prior factor: cartesian 000
+                        gtSAMgraph.add(gtsam::PriorFactor<gtsam::Pose3>(init_node_idx, poseOrigin, priorNoise));
+                        initialEstimate.insert(init_node_idx, poseOrigin);
+                        // runISAM2opt();
+                    }
                 }
                 mtxPosegraph.unlock();
 
@@ -672,11 +690,39 @@ void process_pg()
                     // gps factor
                     if(hasGPSforThisKF) {
                         double curr_altitude_offseted = currGPS->altitude - gpsAltitudeInitOffset;
-                        mtxRecentPose.lock();
-                        gtsam::Point3 gpsConstraint(recentOptimizedX, recentOptimizedY, curr_altitude_offseted); // in this example, only adjusting altitude (for x and y, very big noises are set)
-                        mtxRecentPose.unlock();
-                        gtSAMgraph.add(gtsam::GPSFactor(curr_node_idx, gpsConstraint, robustGPSNoise));
-                        cout << "GPS factor added at node " << curr_node_idx << endl;
+
+                        if (useGPSXY)
+                        {
+                            double enu_x, enu_y, enu_z;
+                            gpsConverter.Forward(currGPS->latitude, currGPS->longitude, currGPS->altitude, enu_x, enu_y, enu_z);
+                            gtsam::Vector robustNoiseVector3(3); // gps factor has 3 elements (xyz)
+                            if (currGPS->position_covariance_type < 2)
+                            {
+                                ROS_WARN("GPS covariance not known, GPS factor will not be added");
+                                // TODO: omit low accuracy GPS readings
+                            }
+                            else
+                            {
+                                robustNoiseVector3 << currGPS->position_covariance[0],
+                                                      currGPS->position_covariance[4],
+                                                      currGPS->position_covariance[8];
+                                robustGPSNoise = gtsam::noiseModel::Robust::Create(
+                                    gtsam::noiseModel::mEstimator::Cauchy::Create(1),
+                                    gtsam::noiseModel::Diagonal::Variances(robustNoiseVector3)
+                                );
+                                gtsam::Point3 gpsConstraint(enu_x, enu_y, enu_z);
+                                gtSAMgraph.add(gtsam::GPSFactor(curr_node_idx, gpsConstraint, robustGPSNoise));
+                                cout << "GPS XYZ factor added at node " << curr_node_idx << endl;
+                            }
+                        }
+                        else
+                        {
+                            mtxRecentPose.lock();
+                            gtsam::Point3 gpsConstraint(recentOptimizedX, recentOptimizedY, curr_altitude_offseted); // in this example, only adjusting altitude (for x and y, very big noises are set)
+                            mtxRecentPose.unlock();
+                            gtSAMgraph.add(gtsam::GPSFactor(curr_node_idx, gpsConstraint, robustGPSNoise));
+                            cout << "GPS factor added at node " << curr_node_idx << endl;
+                        }
                     }
                     initialEstimate.insert(curr_node_idx, poseTo);
                     writeEdge({prev_node_idx, curr_node_idx}, relPose, edges_str); // giseop
